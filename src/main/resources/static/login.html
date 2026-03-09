@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TaskFlow — Login</title>
+    <meta name="description" content="Sign in to TaskFlow to manage your tasks." />
+    <link rel="stylesheet" href="css/styles.css" />
+</head>
+
+<body class="auth-bg">
+
+    <main class="auth-card">
+        <div class="auth-logo">
+            <div class="logo-icon">✅</div>
+            <h1>TaskFlow</h1>
+            <p>Sign in to your account</p>
+        </div>
+
+        <div id="error-msg" class="form-error" role="alert"></div>
+
+        <form id="login-form" novalidate>
+            <div class="form-group">
+                <label for="email">Email address</label>
+                <input id="email" type="email" placeholder="you@example.com" autocomplete="email" required />
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input id="password" type="password" placeholder="Your password" autocomplete="current-password"
+                    required />
+            </div>
+            <button id="login-btn" type="submit" class="btn btn-primary">
+                Sign in
+            </button>
+        </form>
+
+        <div class="auth-footer">
+            Don't have an account? <a href="register.html">Create one</a>
+        </div>
+    </main>
+
+    <script type="module">
+        import { handleLogin, redirectIfLoggedIn } from './js/auth.js';
+
+        // Redirect if already logged in
+        redirectIfLoggedIn();
+
+        const form = document.getElementById('login-form');
+        const btn = document.getElementById('login-btn');
+        const errMsg = document.getElementById('error-msg');
+
+        function showError(msg) {
+            errMsg.textContent = msg;
+            errMsg.classList.add('visible');
+        }
+
+        function clearError() {
+            errMsg.classList.remove('visible');
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            clearError();
+
+            const email = document.getElementById('email').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!email || !password) {
+                showError('Please fill in all fields.');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Signing in…';
+
+            try {
+                await handleLogin(email, password);
+            } catch (err) {
+                showError(err.message || 'Invalid credentials. Please try again.');
+                btn.disabled = false;
+                btn.textContent = 'Sign in';
+            }
+        });
+    </script>
+</body>
+
+</html>
