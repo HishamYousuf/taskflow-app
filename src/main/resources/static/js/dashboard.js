@@ -1,33 +1,26 @@
 // ============================================================
-// dashboard.js — TaskFlow v5
-// BULLETPROOF: DOMContentLoaded + try/catch on init
-// All features: Theme, Categories, Search, Filters, Quick-add,
-// SVG Ring, Stats animation, SortableJS, canvas-confetti,
-// Avatar dropdown, Weekly widget, Keyboard shortcut N,
-// Collapsible desc, Drag & Drop, Notifications
+// dashboard.js — TaskFlow v6
+// Full redesign: Sidebar, Accordion, Animated Donut, Quick-add,
+// Weekly Timeline, Category/Priority Chips, Page-load Stagger
 // ============================================================
 
-// ---- Safe DOM helper (never throws) ----
-function $(id) {
-    return document.getElementById(id);
-}
-
-function on(id, event, fn) {
-    const el = $(id);
-    if (el) el.addEventListener(event, fn);
-}
+// ---- Safe DOM helper ----
+function $(id) { return document.getElementById(id); }
+function on(id, event, fn) { const el = $(id); if (el) el.addEventListener(event, fn); }
 
 // ---- State ----
 let allTasks = [];
 let activeFilter = 'ALL';
 let searchQuery = '';
 let editingId = null;
+let qsPriority = null;
+let qsDue = null;
 const notifiedIds = new Set();
 const today = new Date().toISOString().split('T')[0];
 
 
 // ============================================================
-// ENTRY POINT — wrapped in DOMContentLoaded so DOM always ready
+// ENTRY POINT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
     try { initTheme(); } catch (e) { console.error('Theme init failed', e); }
@@ -36,21 +29,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 // ============================================================
-// THEME (runs first, before auth check)
+// THEME
 // ============================================================
 function initTheme() {
     const saved = localStorage.getItem('taskflow-theme') || 'dark';
     applyTheme(saved);
-
     on('theme-toggle', 'click', toggleTheme);
     on('dropdown-theme', 'click', (e) => { e.stopPropagation(); toggleTheme(); });
 }
 
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
-    const icon = theme === 'dark' ? '☀️' : '🌙';
-    const tt = $('theme-toggle'); if (tt) tt.textContent = icon;
-    const di = $('dropdown-theme-icon'); if (di) di.textContent = icon;
+    const isDark = theme === 'dark';
+    const svgMoon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+    const svgSun = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`;
+    const tt = $('theme-icon'); if (tt) tt.innerHTML = isDark ? svgMoon : svgSun;
+    const di = $('dropdown-theme-icon'); if (di) di.textContent = isDark ? '🌙' : '☀️';
 }
 
 function toggleTheme() {
@@ -62,62 +56,84 @@ function toggleTheme() {
 
 
 // ============================================================
-// MAIN INIT (after theme)
+// MAIN INIT
 // ============================================================
 async function initDashboard() {
+    // ---- Inject SVG gradient defs for donut ----
+    const svgDefs = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svgDefs.setAttribute('style', 'position:absolute;width:0;height:0');
+    svgDefs.innerHTML = `<defs>
+        <linearGradient id="donutGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#4F46E5"/>
+            <stop offset="100%" stop-color="#7C3AED"/>
+        </linearGradient>
+    </defs>`;
+    document.body.prepend(svgDefs);
+
     // ---- Auth check ----
     const token = localStorage.getItem('jwt_token');
     if (!token) { window.location.href = 'login.html'; return; }
 
     // ---- User info ----
     let name = 'User';
-    try {
-        const u = JSON.parse(localStorage.getItem('current_user') || '{}');
-        name = u.name || 'User';
-    } catch (e) { }
+    try { const u = JSON.parse(localStorage.getItem('current_user') || '{}'); name = u.name || 'User'; } catch (e) { }
 
     const initial = name.charAt(0).toUpperCase();
-    if ($('user-name')) $('user-name').textContent = name;
-    if ($('user-avatar')) $('user-avatar').textContent = initial;
+    ['user-name', 'sidebar-username'].forEach(id => { const el = $(id); if (el) el.textContent = name; });
+    ['user-avatar', 'dropdown-avatar', 'sidebar-avatar'].forEach(id => { const el = $(id); if (el) el.textContent = initial; });
     if ($('dropdown-name')) $('dropdown-name').textContent = name;
-    if ($('dropdown-avatar')) $('dropdown-avatar').textContent = initial;
     if ($('dropdown-sub')) $('dropdown-sub').textContent = 'Member';
 
-    // ---- Nav ----
-    on('nav-all', 'click', () => setNav('ALL', 'nav-all'));
-    on('nav-completed', 'click', () => setNav('COMPLETED', 'nav-completed'));
+    // ---- Sidebar mobile toggle ----
+    const sidebar = $('sidebar');
+    const overlay = $('sidebar-overlay');
+    function openSidebar() { sidebar?.classList.add('open'); overlay?.classList.add('show'); }
+    function closeSidebar() { sidebar?.classList.remove('open'); overlay?.classList.remove('show'); }
+    on('topbar-hamburger', 'click', openSidebar);
+    overlay?.addEventListener('click', closeSidebar);
 
-    // ---- FAB + Empty CTA ----
+    // ---- Sidebar nav items ----
+    document.querySelectorAll('.sidebar-nav .nav-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            const section = item.dataset.section;
+            if (!section || section === 'calendar' || section === 'analytics' || section === 'settings') return;
+            document.querySelectorAll('.sidebar-nav .nav-item').forEach(n => n.classList.remove('active'));
+            item.classList.add('active');
+            if (section === 'completed') { activeFilter = 'COMPLETED'; }
+            else { activeFilter = 'ALL'; }
+            document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
+            document.querySelector(`.filter-chip[data-filter="${activeFilter}"]`)?.classList.add('active');
+            renderAll();
+            closeSidebar();
+        });
+    });
+
+    // ---- FAB + empty CTA ----
     on('fab-add', 'click', openAddModal);
     on('empty-add-btn', 'click', openAddModal);
+    on('empty-today-btn', 'click', openAddModal);
+    on('quick-add-fab-btn', 'click', () => $('quick-add-input')?.focus());
 
-    // ---- Logout ----
-    on('dropdown-logout', 'click', () => {
-        localStorage.removeItem('jwt_token');
-        localStorage.removeItem('current_user');
-        window.location.href = 'login.html';
-    });
-    on('logout-btn', 'click', () => {
-        localStorage.removeItem('jwt_token');
-        localStorage.removeItem('current_user');
-        window.location.href = 'login.html';
+    // ---- Logout (multiple buttons) ----
+    ['logout-btn', 'dropdown-logout', 'logout-btn-hidden'].forEach(id => {
+        on(id, 'click', () => {
+            localStorage.removeItem('jwt_token');
+            localStorage.removeItem('current_user');
+            window.location.href = 'login.html';
+        });
     });
 
     // ---- Avatar dropdown ----
     const wrap = $('avatar-wrap');
     const dropdown = $('avatar-dropdown');
     if (wrap && dropdown) {
-        $('user-avatar').addEventListener('click', (e) => {
+        $('user-avatar')?.addEventListener('click', (e) => {
             e.stopPropagation();
-            const open = !dropdown.classList.contains('hidden');
-            dropdown.classList.toggle('hidden', open);
-            wrap.classList.toggle('open', !open);
+            dropdown.classList.toggle('hidden');
         });
         document.addEventListener('click', (e) => {
-            if (!wrap.contains(e.target)) {
-                dropdown.classList.add('hidden');
-                wrap.classList.remove('open');
-            }
+            if (!wrap.contains(e.target)) dropdown.classList.add('hidden');
         });
     }
 
@@ -146,35 +162,76 @@ async function initDashboard() {
 
     // ---- Quick-add ----
     const qai = $('quick-add-input');
+    const qaCard = $('quick-add-bar');
+    const suggestions = $('quick-suggestions');
+
     if (qai) {
         qai.addEventListener('keydown', async (e) => {
             if (e.key !== 'Enter') return;
             const title = qai.value.trim();
             if (!title) return;
             qai.value = '';
-            await quickCreate(title);
+            qsPriority = null; qsDue = null;
+            hideSuggestions();
+            await quickCreate(title, qsPriority, qsDue);
+        });
+
+        qai.addEventListener('focus', showSuggestions);
+        qai.addEventListener('blur', (e) => {
+            // delay so chip clicks register
+            setTimeout(() => { if (!qaCard?.contains(document.activeElement)) hideSuggestions(); }, 200);
         });
     }
-    on('quick-add-bar', 'click', () => { if (qai) qai.focus(); });
 
-    // ---- Keyboard shortcut: N → open modal ----
+    // Quick suggestions chips
+    document.querySelectorAll('[data-qs-priority]').forEach(chip => {
+        chip.addEventListener('click', () => {
+            document.querySelectorAll('[data-qs-priority]').forEach(c => c.classList.remove('active'));
+            if (qsPriority === chip.dataset.qsPriority) { qsPriority = null; }
+            else { qsPriority = chip.dataset.qsPriority; chip.classList.add('active'); }
+        });
+    });
+    document.querySelectorAll('[data-qs-due]').forEach(chip => {
+        chip.addEventListener('click', () => {
+            document.querySelectorAll('[data-qs-due]').forEach(c => c.classList.remove('active'));
+            if (qsDue === chip.dataset.qsDue) { qsDue = null; }
+            else { qsDue = chip.dataset.qsDue; chip.classList.add('active'); }
+        });
+    });
+
+    // ---- Keyboard shortcut: N → focus quick add / open modal ----
     document.addEventListener('keydown', (e) => {
         const tag = document.activeElement.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-        if (e.key === 'n' || e.key === 'N') openAddModal();
-        if (e.key === 'Escape') closeModal();
+        if (e.key === 'n' || e.key === 'N') { qai?.focus(); }
+        if (e.key === 'Escape') { closeModal(); hideSuggestions(); }
     });
 
     // ---- Load data ----
     await loadTasks();
 
-    // ---- Notifications (optional) ----
+    // ---- Notifications ----
     try { initNotifications(); } catch (e) { }
 }
 
 
 // ============================================================
-// API HELPERS (inline, no import dependency that can fail)
+// SUGGESTION ROW HELPERS
+// ============================================================
+function showSuggestions() {
+    const s = $('quick-suggestions');
+    if (s) { s.classList.remove('hidden'); }
+}
+function hideSuggestions() {
+    const s = $('quick-suggestions');
+    if (s) { s.classList.add('hidden'); }
+    document.querySelectorAll('[data-qs-priority],[data-qs-due]').forEach(c => c.classList.remove('active'));
+    qsPriority = null; qsDue = null;
+}
+
+
+// ============================================================
+// API HELPERS
 // ============================================================
 const BASE_URL = '/api';
 
@@ -185,7 +242,6 @@ async function apiRequest(method, path, body) {
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     };
     if (body) opts.body = JSON.stringify(body);
-
     const res = await fetch(BASE_URL + path, opts);
     if (res.status === 401) { window.location.href = 'login.html'; return; }
     if (!res.ok) {
@@ -253,8 +309,8 @@ function bucketTasks(tasks) {
     const todayList = [], upcomingList = [], completedList = [];
     tasks.forEach(t => {
         if (t.status === 'COMPLETED') { completedList.push(t); return; }
-        if (!t.dueDate || t.dueDate === today) { todayList.push(t); }
-        else { upcomingList.push(t); }
+        if (!t.dueDate || t.dueDate === today) todayList.push(t);
+        else upcomingList.push(t);
     });
     upcomingList.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
     const po = { HIGH: 0, MEDIUM: 1, LOW: 2 };
@@ -291,9 +347,13 @@ function renderSection(key, tasks) {
     if (count) count.textContent = tasks.length;
     if (tasks.length === 0) { if (empty) empty.classList.remove('hidden'); return; }
     if (empty) empty.classList.add('hidden');
-    tasks.forEach(t => list.appendChild(buildCard(t)));
 
-    // SortableJS
+    tasks.forEach((t, i) => {
+        const card = buildCard(t);
+        card.style.animationDelay = `${i * 40}ms`;
+        list.appendChild(card);
+    });
+
     if (window.Sortable) {
         new Sortable(list, {
             group: `section-${key}`, animation: 180, delay: 80,
@@ -316,63 +376,84 @@ function clearSections() {
 
 
 // ============================================================
-// BUILD CARD
+// BUILD CARD (new design)
 // ============================================================
 function buildCard(task) {
     const card = document.createElement('div');
     const isDone = task.status === 'COMPLETED';
+    const pri = task.priority || 'LOW';
+    const cat = task.category || 'PERSONAL';
 
-    let urgencyClass = '';
+    let urgency = '';
     if (!isDone && task.dueDate) {
-        if (task.dueDate < today) urgencyClass = 'due-overdue';
-        else if (task.dueDate === today) urgencyClass = 'due-urgent';
+        if (task.dueDate < today) urgency = 'urgent';
+        else if (task.dueDate === today) urgency = 'due-soon';
     }
-    card.className = `task-card priority-${task.priority || 'LOW'} ${isDone ? 'completed-card' : ''} ${urgencyClass}`.trim();
+    card.className = `task-card priority-${pri} ${isDone ? 'completed-card' : ''} ${urgency}`.trim();
     card.dataset.id = task.id;
 
-    const dueInfo = getDueInfo(task.dueDate, isDone);
-    const hasDesc = !!task.description;
+    // Category chip
+    const catMap = {
+        WORK: { cls: 'cat-work', icon: '💼', label: 'Work' },
+        PERSONAL: { cls: 'cat-personal', icon: '🏠', label: 'Personal' },
+        HEALTH: { cls: 'cat-health', icon: '💪', label: 'Health' },
+    };
+    const catInfo = catMap[cat] || catMap.PERSONAL;
 
-    const priLabel = { HIGH: '⚠ High Priority', MEDIUM: '● Medium', LOW: '○ Low' }[task.priority] || '○ Low';
-    const catLabel = { WORK: '💼 Work', PERSONAL: '🏠 Personal', HEALTH: '💪 Health' }[task.category] || '🏠 Personal';
-    const dueLabel = dueInfo ? `📅 ${dueInfo.label}` : '';
-    const dueCls = dueInfo ? dueInfo.cls : '';
+    // Priority badge
+    const priMap = {
+        HIGH: { cls: 'badge-high', label: 'High' },
+        MEDIUM: { cls: 'badge-medium', label: 'Medium' },
+        LOW: { cls: 'badge-low', label: 'Low' },
+    };
+    const priInfo = priMap[pri] || priMap.LOW;
+
+    // Due date chip
+    const dueInfo = getDueInfo(task.dueDate, isDone);
+    const dueHtml = dueInfo
+        ? `<span class="due-chip ${dueInfo.cls}">📅 ${dueInfo.label}</span>`
+        : '';
+
+    // Description accordion
+    const hasDesc = !!task.description;
+    const descHtml = hasDesc ? `
+        <div class="task-desc-panel" id="desc-panel-${task.id}">
+            <p class="task-desc-text">${escHtml(task.description)}</p>
+            <div class="task-desc-actions">
+                <button class="task-desc-btn edit-btn" data-action="edit" data-id="${task.id}">✏️ Edit</button>
+                <button class="task-desc-btn delete delete-btn" data-action="delete" data-id="${task.id}">🗑️ Delete</button>
+            </div>
+        </div>` : '';
 
     card.innerHTML = `
-        <button class="task-check" data-action="toggle" data-id="${task.id}"
-                title="${isDone ? 'Mark as pending' : 'Mark as complete'}"
-                aria-label="${isDone ? 'Mark as pending' : 'Mark as complete'}">
-            ${isDone ? '✓' : ''}
-        </button>
-        <div class="task-body">
-            <div class="task-title">${escHtml(task.title)}</div>
-            <div class="task-meta-line">
-                <span class="meta-cat">${catLabel}</span>
-                <span class="meta-dot">•</span>
-                <span class="meta-pri ${task.priority || 'LOW'}">${priLabel}</span>
-                ${dueLabel ? `<span class="meta-dot">•</span><span class="meta-due ${dueCls}">${dueLabel}</span>` : ''}
+        <div class="task-main">
+            <button class="task-check${isDone ? ' done' : ''}" data-action="toggle" data-id="${task.id}"
+                    title="${isDone ? 'Mark as pending' : 'Mark as complete'}"
+                    aria-label="${isDone ? 'Mark as pending' : 'Mark as complete'}">
+                ${isDone ? '✓' : ''}
+            </button>
+            <div class="task-body">
+                <div class="task-title">${escHtml(task.title)}</div>
+                <div class="task-meta">
+                    <span class="cat-chip ${catInfo.cls}">${catInfo.icon} ${catInfo.label}</span>
+                    <span class="priority-badge ${priInfo.cls}">${priInfo.label}</span>
+                    ${dueHtml}
+                </div>
             </div>
-            ${hasDesc ? `
-            <span class="desc-toggle" data-desc="${task.id}">Details ▼</span>
-            <div class="task-desc-content" id="desc-${task.id}">${escHtml(task.description)}</div>
-            ` : ''}
+            <div class="task-actions">
+                <button class="task-action-btn edit" data-action="edit" data-id="${task.id}" title="Edit">✏️</button>
+                <button class="task-action-btn del"  data-action="delete" data-id="${task.id}" title="Delete">🗑️</button>
+            </div>
         </div>
-        <div class="task-actions">
-            <button class="btn-icon btn-edit"   data-action="edit"   data-id="${task.id}" title="Edit">✏️</button>
-            <button class="btn-icon btn-delete" data-action="delete" data-id="${task.id}" title="Delete">🗑️</button>
-        </div>`;
+        ${descHtml}`;
 
-    // Collapsible description
+    // Accordion: click task-main (not buttons) toggles description
     if (hasDesc) {
-        const toggle = card.querySelector('.desc-toggle');
-        const content = card.querySelector(`#desc-${task.id}`);
-        if (toggle && content) {
-            toggle.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const open = content.classList.toggle('expanded');
-                toggle.textContent = open ? 'Details ▲' : 'Details ▼';
-            });
-        }
+        card.querySelector('.task-main').addEventListener('click', (e) => {
+            if (e.target.closest('[data-action]')) return; // let button handle
+            const panel = card.querySelector(`#desc-panel-${task.id}`);
+            if (panel) panel.classList.toggle('expanded');
+        });
     }
 
     card.addEventListener('click', handleCardAction);
@@ -381,8 +462,8 @@ function buildCard(task) {
 
 function getDueInfo(dueDate, isDone) {
     if (!dueDate || isDone) return null;
-    if (dueDate < today) return { label: 'Overdue', cls: 'due-overdue' };
-    if (dueDate === today) return { label: 'Due today', cls: 'due-today' };
+    if (dueDate < today) return { label: 'Overdue', cls: 'overdue' };
+    if (dueDate === today) return { label: 'Due today', cls: 'soon' };
     return { label: formatDate(dueDate), cls: '' };
 }
 
@@ -393,16 +474,17 @@ function getDueInfo(dueDate, isDone) {
 async function handleCardAction(e) {
     const el = e.target.closest('[data-action]');
     if (!el) return;
+    e.stopPropagation();
     const { action, id } = el.dataset;
     const taskId = Number(id);
-    if (action === 'toggle') await doToggle(taskId);
+    if (action === 'toggle') await doToggle(taskId, el);
     if (action === 'edit') openEditModal(taskId);
     if (action === 'delete') await doDelete(taskId);
 }
 
 
 // ============================================================
-// STATS + RING
+// STATS + DONUT RING
 // ============================================================
 function updateStats() {
     const total = allTasks.length;
@@ -418,11 +500,10 @@ function updateStats() {
 }
 
 function animateCount(id, target) {
-    const el = $(id);
-    if (!el) return;
+    const el = $(id); if (!el) return;
     const from = parseInt(el.textContent) || 0;
     if (from === target) return;
-    const dur = 500, start = performance.now();
+    const dur = 600, start = performance.now();
     function tick(now) {
         const p = Math.min((now - start) / dur, 1);
         const e = 1 - Math.pow(1 - p, 3);
@@ -438,30 +519,83 @@ function updateRing() {
     const total = todayAll.length, done = todayDone.length;
     const pct = total === 0 ? 0 : Math.round((done / total) * 100);
 
+    // Animate donut: dasharray=100, dashoffset = 100 - pct
     const fill = $('ring-fill');
-    if (fill) fill.style.strokeDashoffset = 100 - pct;
-    if ($('ring-pct')) $('ring-pct').textContent = `${pct}%`;
-    if ($('ring-subtitle')) {
-        $('ring-subtitle').textContent = total === 0 ? 'No tasks due today' : `${done} of ${total} completed`;
+    if (fill) {
+        // Trigger animation via setTimeout to allow CSS transition
+        setTimeout(() => { fill.style.strokeDashoffset = String(100 - pct); }, 100);
     }
+    if ($('ring-pct')) $('ring-pct').textContent = `${pct}%`;
+    if ($('ring-subtitle')) $('ring-subtitle').textContent = total === 0 ? 'No tasks due today' : `${done} of ${total} done`;
     if ($('ring-fraction')) {
         const rem = total - done;
-        $('ring-fraction').textContent = rem > 0 ? `${rem} task${rem > 1 ? 's' : ''} remaining`
+        $('ring-fraction').textContent = rem > 0
+            ? `${rem} remaining`
             : total > 0 ? 'All done! 🎉' : '';
     }
 }
 
 
 // ============================================================
-// WEEKLY WIDGET
+// WEEKLY WIDGET (new timeline design)
 // ============================================================
 function renderWeeklyWidget() {
     const daysEl = $('weekly-days');
+    const chipsEl = $('weekly-chips');
     const streakEl = $('weekly-streak');
     if (!daysEl) return;
 
     const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const now = new Date();
+
+    // Build 7-day window
+    const days = [];
+    let streak = 0;
+
+    for (let i = 6; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(now.getDate() - i);
+        const iso = d.toISOString().split('T')[0];
+        const isToday = iso === today;
+        const isPast = iso < today;
+
+        const dayTasks = allTasks.filter(t => t.dueDate === iso);
+        const pending = dayTasks.filter(t => t.status === 'PENDING');
+        const done = dayTasks.filter(t => t.status === 'COMPLETED');
+        const overdue = isPast && pending.length > 0;
+
+        let dotClass = 'empty';
+        if (dayTasks.length === 0) dotClass = 'empty';
+        else if (overdue) dotClass = 'overdue';
+        else if (pending.length > 0) dotClass = 'pending';
+        else dotClass = 'done';
+
+        days.push({
+            abbr: DAY_NAMES[d.getDay()],
+            num: d.getDate(),
+            iso, isToday, isPast,
+            total: dayTasks.length, done: done.length, pending: pending.length,
+            dotClass,
+            hadDone: done.length > 0,
+            taskNames: dayTasks.map(t => t.title).slice(0, 3),
+        });
+    }
+
+    // Streak
+    for (let i = days.length - 2; i >= 0; i--) {
+        if (days[i].hadDone) streak++;
+        else break;
+    }
+
+    daysEl.innerHTML = days.map(day => `
+        <div class="week-day-col${day.isToday ? ' today' : ''}" title="${day.taskNames.join(', ') || 'No tasks'}">
+            <span class="week-day-abbr">${day.abbr}</span>
+            <span class="week-day-num">${day.num}</span>
+            <div class="week-dot ${day.dotClass}"></div>
+            <span class="week-count">${day.total > 0 ? day.total : ''}</span>
+        </div>`).join('');
+
+    // Summary chips
     const totalTasks = allTasks.length;
     const doneTasks = allTasks.filter(t => t.status === 'COMPLETED').length;
     const weekDue = allTasks.filter(t => {
@@ -471,54 +605,25 @@ function renderWeeklyWidget() {
         return diff >= -1 && diff <= 7;
     }).length;
 
-    // Build last 7 days
-    const days = [];
-    let streak = 0;
-    for (let i = 6; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(now.getDate() - i);
-        const iso = d.toISOString().split('T')[0];
-        const isT = iso === today;
-        const isPast = iso < today;
-        const hadDone = allTasks.some(t => t.status === 'COMPLETED' && t.dueDate === iso);
-        days.push({ label: DAY_NAMES[d.getDay()], iso, isT, isPast, hadDone });
+    if (chipsEl) {
+        chipsEl.innerHTML = `
+            <div class="week-chip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                <span>${totalTasks} Tasks</span>
+            </div>
+            <div class="week-chip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>${doneTasks} Completed</span>
+            </div>
+            <div class="week-chip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                <span>${weekDue} Due this week</span>
+            </div>`;
     }
-
-    // Streak = consecutive past days with completions, going back from yesterday
-    for (let i = days.length - 2; i >= 0; i--) {
-        if (days[i].hadDone) streak++;
-        else break;
-    }
-
-    daysEl.innerHTML = days.map(day => {
-        let cls = 'future', icon = '·';
-        if (day.isT) { cls = 'todaydot'; icon = '▶'; }
-        else if (day.hadDone) { cls = 'done'; icon = '✓'; }
-        else if (day.isPast) { cls = 'missed'; icon = '–'; }
-        return `<div class="day-pill">
-                    <span class="day-label">${day.label}</span>
-                    <div class="day-dot ${cls}">${icon}</div>
-                </div>`;
-    }).join('');
-
-    // Stats line below dots
-    const existingStats = daysEl.parentElement.querySelector('.weekly-stats-line');
-    if (existingStats) existingStats.remove();
-    const statsLine = document.createElement('div');
-    statsLine.className = 'weekly-stats-line';
-    statsLine.innerHTML = `
-        <span>📋 Total tasks: <strong>${totalTasks}</strong></span>
-        <span>✅ Completed: <strong>${doneTasks}</strong></span>
-        <span>📅 Due this week: <strong>${weekDue}</strong></span>`;
-    daysEl.parentElement.appendChild(statsLine);
 
     if (streakEl) {
-        if (streak > 0) {
-            streakEl.textContent = `🔥 ${streak}-day streak`;
-            streakEl.style.display = '';
-        } else {
-            streakEl.style.display = 'none';
-        }
+        streakEl.textContent = streak > 0 ? `🔥 ${streak}-day streak` : '';
+        streakEl.style.display = streak > 0 ? '' : 'none';
     }
 }
 
@@ -538,9 +643,24 @@ function fireConfetti() {
 // ============================================================
 // CRUD
 // ============================================================
-async function quickCreate(title) {
+async function quickCreate(title, priority, dueKey) {
+    let dueDate = null;
+    if (dueKey === 'today') dueDate = today;
+    else if (dueKey === 'tomorrow') {
+        const d = new Date(); d.setDate(d.getDate() + 1);
+        dueDate = d.toISOString().split('T')[0];
+    } else if (dueKey === 'week') {
+        const d = new Date(); d.setDate(d.getDate() + 7);
+        dueDate = d.toISOString().split('T')[0];
+    }
+
     try {
-        const created = await api.create({ title, priority: 'LOW', category: 'PERSONAL' });
+        const created = await api.create({
+            title,
+            priority: priority || 'LOW',
+            category: 'PERSONAL',
+            dueDate,
+        });
         if (created) { allTasks.unshift(created); renderAll(); renderWeeklyWidget(); }
         showToast('Task added! ✓', 'success');
     } catch (err) { showToast(err.message || 'Could not create task', 'error'); }
@@ -576,14 +696,22 @@ async function handleFormSubmit(e) {
     } finally { if (btn) btn.disabled = false; }
 }
 
-async function doToggle(id) {
+async function doToggle(id, checkBtn) {
+    // Visual feedback first
+    if (checkBtn) {
+        checkBtn.classList.add('done');
+        checkBtn.textContent = '✓';
+    }
     try {
         const updated = await api.toggle(id);
         if (updated) allTasks = allTasks.map(t => t.id === id ? updated : t);
         renderAll(); renderWeeklyWidget();
         if (updated?.status === 'COMPLETED') { fireConfetti(); showToast('Done! 🎉', 'success'); }
         else showToast('Marked pending', 'success');
-    } catch (err) { showToast(err.message || 'Could not update', 'error'); }
+    } catch (err) {
+        showToast(err.message || 'Could not update', 'error');
+        renderAll(); // revert visual
+    }
 }
 
 async function doDelete(id) {
@@ -625,24 +753,9 @@ function openEditModal(id) {
 }
 
 function closeModal() {
-    const mo = $('modal-overlay');
-    if (mo) mo.classList.add('hidden');
+    const mo = $('modal-overlay'); if (mo) mo.classList.add('hidden');
     const form = $('task-form'); if (form) form.reset();
     editingId = null;
-}
-
-
-// ============================================================
-// NAV
-// ============================================================
-function setNav(filter, activeId) {
-    activeFilter = filter;
-    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-    const al = $(activeId); if (al) al.classList.add('active');
-    document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
-    const sel = filter === 'COMPLETED' ? 'COMPLETED' : 'ALL';
-    document.querySelector(`.filter-chip[data-filter="${sel}"]`)?.classList.add('active');
-    renderAll();
 }
 
 
@@ -682,8 +795,7 @@ function checkAndNotify() {
 // ============================================================
 let toastTimer;
 function showToast(msg, type = 'success') {
-    const t = $('toast');
-    if (!t) return;
+    const t = $('toast'); if (!t) return;
     t.textContent = msg;
     t.className = `toast show ${type}`;
     clearTimeout(toastTimer);
@@ -700,5 +812,10 @@ function formatDate(dateStr) {
 }
 
 function escHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    if (!str) return '';
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
