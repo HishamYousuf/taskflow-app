@@ -70,7 +70,12 @@ public class JwtUtil {
     }
 
     private SecretKey getSigningKey() {
-        byte[] keyBytes = java.util.HexFormat.of().parseHex(secret);
-        return Keys.hmacShaKeyFor(keyBytes);
+        try {
+            byte[] keyBytes = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(secret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return Keys.hmacShaKeyFor(keyBytes);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
     }
 }
